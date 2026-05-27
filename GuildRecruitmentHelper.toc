@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: GuildRecruitmentHelper
+## Notes: Guild recruitment spam and application helper
+## Author: understyx
+## Version: 1.0.0
+## SavedVariables: GuildRecruitmentHelperDB
+
+GuildRecruitmentHelper.lua
