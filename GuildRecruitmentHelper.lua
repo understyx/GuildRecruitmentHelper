@@ -19,6 +19,7 @@ local defaults = {
 
 local COMMAND_APPLY = "!apply"
 local COMMAND_NEXT = "!next"
+local MIN_SPAM_INTERVAL = 60
 
 local function EnsureDB()
     if not GuildRecruitmentHelperDB then
@@ -284,8 +285,8 @@ local function InitializeUI()
         local cfg = EnsureConfigForOption(option)
         cfg.message = Trim(ui.messageBox:GetText())
         cfg.interval = tonumber(ui.intervalBox:GetText()) or 300
-        if cfg.interval < 60 then
-            cfg.interval = 60
+        if cfg.interval < MIN_SPAM_INTERVAL then
+            cfg.interval = MIN_SPAM_INTERVAL
         end
         cfg.enabled = ui.enabledCheck:GetChecked() and true or false
         cfg.nextSendAt = nil
