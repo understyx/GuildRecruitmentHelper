@@ -17,6 +17,9 @@ local defaults = {
     },
 }
 
+local COMMAND_APPLY = "!apply"
+local COMMAND_NEXT = "!next"
+
 local function EnsureDB()
     if not GuildRecruitmentHelperDB then
         GuildRecruitmentHelperDB = {}
@@ -132,7 +135,11 @@ local function RefreshAnswersText()
 
     local lines = {}
     table.insert(lines, "Applicant: " .. state.selectedApplicant)
-    table.insert(lines, "Submitted: " .. (application.submittedAt or "Unknown"))
+    local submittedLabel = "Unknown"
+    if application.submittedAt then
+        submittedLabel = date("%Y-%m-%d %H:%M:%S", application.submittedAt)
+    end
+    table.insert(lines, "Submitted: " .. submittedLabel)
     table.insert(lines, "")
 
     local questions = state.db.questions
@@ -422,7 +429,7 @@ end
 
 local function CompleteSession(playerName, session)
     state.db.applications[playerName] = {
-        submittedAt = date("%Y-%m-%d %H:%M:%S"),
+        submittedAt = time(),
         answers = session.answers,
     }
     state.whisperSessions[playerName] = nil
@@ -439,7 +446,7 @@ local function HandleSessionMessage(playerName, message)
     end
 
     local text = Trim(message)
-    if strlower(text) == "!next" then
+    if strlower(text) == COMMAND_NEXT then
         if session.currentAnswer == "" then
             SendChatMessage("Please provide an answer before using !next.", "WHISPER", nil, playerName)
             return
@@ -479,7 +486,7 @@ local function HandleWhisper(message, sender)
         return
     end
 
-    if strlower(text) == "!apply" then
+    if strlower(text) == COMMAND_APPLY then
         if state.whisperSessions[playerName] then
             SendChatMessage("Your application is already in progress. Continue answering and use !next when ready.", "WHISPER", nil, playerName)
         else
