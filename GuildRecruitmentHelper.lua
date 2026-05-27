@@ -135,9 +135,9 @@ local function RefreshAnswersText()
 
     local lines = {}
     table.insert(lines, "Applicant: " .. state.selectedApplicant)
-    local submittedLabel = "Unknown"
-    if application.submittedAt then
-        submittedLabel = date("%Y-%m-%d %H:%M:%S", application.submittedAt)
+    local submittedLabel = application.submittedAtText or "Unknown"
+    if submittedLabel == "Unknown" and application.submittedAt then
+        submittedLabel = tostring(application.submittedAt)
     end
     table.insert(lines, "Submitted: " .. submittedLabel)
     table.insert(lines, "")
@@ -284,8 +284,8 @@ local function InitializeUI()
         local cfg = EnsureConfigForOption(option)
         cfg.message = Trim(ui.messageBox:GetText())
         cfg.interval = tonumber(ui.intervalBox:GetText()) or 300
-        if cfg.interval < 5 then
-            cfg.interval = 5
+        if cfg.interval < 60 then
+            cfg.interval = 60
         end
         cfg.enabled = ui.enabledCheck:GetChecked() and true or false
         cfg.nextSendAt = nil
@@ -428,8 +428,15 @@ local function StartApplySession(playerName)
 end
 
 local function CompleteSession(playerName, session)
+    local submittedAt = time()
+    local submittedAtText = tostring(submittedAt)
+    if type(date) == "function" then
+        submittedAtText = date("%Y-%m-%d %H:%M:%S", submittedAt)
+    end
+
     state.db.applications[playerName] = {
-        submittedAt = time(),
+        submittedAt = submittedAt,
+        submittedAtText = submittedAtText,
         answers = session.answers,
     }
     state.whisperSessions[playerName] = nil
