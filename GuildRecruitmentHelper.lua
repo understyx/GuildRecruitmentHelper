@@ -5,7 +5,7 @@ local state = {
     db = nil,
     isSpamming = false,
     whisperSessions = {},
-    selectedChannelKey = nil,
+    activeTab = "spam",
     selectedApplicant = nil,
 }
 
@@ -174,32 +174,232 @@ local function RefreshApplicantDropdownText()
     end
 end
 
-local function RefreshConfigFields()
-    if not state.selectedChannelKey then
+-- Builds (or refreshes) the per-channel spam rows inside the scroll child.
+-- Each row has: channel label | message editbox | interval editbox | enabled checkbox | save button.
+local function BuildSpamRows()
+    local scrollChild = ui.spamScrollChild
+    if not scrollChild then
         return
     end
 
-    local option = GetChannelOptionByKey(state.selectedChannelKey)
-    if not option then
-        local first = EnumerateChannels()[1]
-        if not first then
-            return
+    local options = EnumerateChannels()
+    local rowH = 30
+    local contentH = rowH * #options + 4
+    if contentH < 1 then
+        contentH = 1
+    end
+    scrollChild:SetHeight(contentH)
+
+    for i = 1, #options do
+        local option = options[i]
+        local cfg = EnsureConfigForOption(option)
+        local yTop = -(i - 1) * rowH - 2
+
+        local row = ui.spamRows[i]
+        if not row then
+            row = {}
+            ui.spamRows[i] = row
+
+            row.label = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.label:SetWidth(130)
+            row.label:SetJustifyH("LEFT")
+
+            row.msgBox = CreateFrame("EditBox", "GRHSpamMsg" .. i, scrollChild, "InputBoxTemplate")
+            row.msgBox:SetWidth(300)
+            row.msgBox:SetHeight(20)
+            row.msgBox:SetAutoFocus(false)
+            row.msgBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+            row.intBox = CreateFrame("EditBox", "GRHSpamInt" .. i, scrollChild, "InputBoxTemplate")
+            row.intBox:SetWidth(50)
+            row.intBox:SetHeight(20)
+            row.intBox:SetNumeric(true)
+            row.intBox:SetAutoFocus(false)
+            row.intBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+            row.check = CreateFrame("CheckButton", "GRHSpamCheck" .. i, scrollChild, "UICheckButtonTemplate")
+            _G["GRHSpamCheck" .. i .. "Text"]:SetText("")
+
+            row.saveBtn = CreateFrame("Button", "GRHSpamSave" .. i, scrollChild, "UIPanelButtonTemplate")
+            row.saveBtn:SetWidth(60)
+            row.saveBtn:SetHeight(22)
+            row.saveBtn:SetText("Save")
         end
-        option = first
-        state.selectedChannelKey = option.key
+
+        -- Reposition each element for this row
+        row.label:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, yTop - 7)
+        row.msgBox:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 140, yTop - 4)
+        row.intBox:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 448, yTop - 4)
+        row.check:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 504, yTop - 1)
+        row.saveBtn:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 534, yTop - 3)
+
+        -- Populate current config values
+        row.label:SetText(option.label)
+        row.msgBox:SetText(cfg.message or "")
+        row.intBox:SetText(tostring(cfg.interval or 300))
+        row.check:SetChecked(cfg.enabled and true or false)
+
+        -- Per-row save closure
+        do
+            local capturedOption = option
+            local capturedRow = row
+            row.saveBtn:SetScript("OnClick", function()
+                local c = EnsureConfigForOption(capturedOption)
+                c.message = Trim(capturedRow.msgBox:GetText())
+                c.interval = tonumber(capturedRow.intBox:GetText()) or 300
+                if c.interval < MIN_SPAM_INTERVAL then
+                    c.interval = MIN_SPAM_INTERVAL
+                    capturedRow.intBox:SetText(tostring(c.interval))
+                end
+                c.enabled = capturedRow.check:GetChecked() and true or false
+                c.nextSendAt = nil
+                DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[GRH]|r Saved spam config for " .. capturedOption.label)
+            end)
+        end
+
+        row.label:Show()
+        row.msgBox:Show()
+        row.intBox:Show()
+        row.check:Show()
+        row.saveBtn:Show()
     end
 
-    local cfg = EnsureConfigForOption(option)
-    ui.messageBox:SetText(cfg.message or "")
-    ui.intervalBox:SetText(tostring(cfg.interval or 300))
-    ui.enabledCheck:SetChecked(cfg.enabled and true or false)
-    UIDropDownMenu_SetText(ui.channelDropdown, option.label)
+    -- Hide rows that are no longer needed
+    for i = #options + 1, #ui.spamRows do
+        local row = ui.spamRows[i]
+        if row then
+            if row.label then row.label:Hide() end
+            if row.msgBox then row.msgBox:Hide() end
+            if row.intBox then row.intBox:Hide() end
+            if row.check then row.check:Hide() end
+            if row.saveBtn then row.saveBtn:Hide() end
+        end
+    end
+end
+
+-- Persist whatever is currently typed in the question editboxes back to the DB.
+local function SaveQuestionEdits()
+    if not ui.formRows then
+        return
+    end
+    local questions = state.db.questions
+    for i = 1, #questions do
+        local row = ui.formRows[i]
+        if row and row.qBox then
+            local txt = Trim(row.qBox:GetText())
+            if txt ~= "" then
+                questions[i] = txt
+            end
+        end
+    end
+end
+
+-- Builds (or refreshes) the question rows inside the Form Creation scroll child.
+-- Each row has: index label | question editbox | delete button.
+local function BuildQuestionRows()
+    local scrollChild = ui.formScrollChild
+    if not scrollChild then
+        return
+    end
+
+    local questions = state.db.questions
+    local rowH = 28
+    local contentH = rowH * #questions + 4
+    if contentH < 1 then
+        contentH = 1
+    end
+    scrollChild:SetHeight(contentH)
+
+    for i = 1, #questions do
+        local yTop = -(i - 1) * rowH - 2
+
+        local row = ui.formRows[i]
+        if not row then
+            row = {}
+            ui.formRows[i] = row
+
+            row.indexLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.indexLabel:SetWidth(28)
+            row.indexLabel:SetJustifyH("RIGHT")
+
+            row.qBox = CreateFrame("EditBox", "GRHFormQ" .. i, scrollChild, "InputBoxTemplate")
+            row.qBox:SetWidth(502)
+            row.qBox:SetHeight(20)
+            row.qBox:SetAutoFocus(false)
+            row.qBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+
+            row.delBtn = CreateFrame("Button", "GRHFormDel" .. i, scrollChild, "UIPanelButtonTemplate")
+            row.delBtn:SetWidth(62)
+            row.delBtn:SetHeight(22)
+            row.delBtn:SetText("Delete")
+        end
+
+        row.indexLabel:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, yTop - 6)
+        row.qBox:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 36, yTop - 4)
+        row.delBtn:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 544, yTop - 3)
+
+        row.indexLabel:SetText("Q" .. i .. ":")
+        row.qBox:SetText(questions[i] or "")
+
+        -- Per-row delete closure; saves other edits first so they aren't lost
+        do
+            local capturedIndex = i
+            row.delBtn:SetScript("OnClick", function()
+                SaveQuestionEdits()
+                table.remove(state.db.questions, capturedIndex)
+                BuildQuestionRows()
+            end)
+        end
+
+        row.indexLabel:Show()
+        row.qBox:Show()
+        row.delBtn:Show()
+    end
+
+    -- Hide rows that are no longer needed
+    for i = #questions + 1, #ui.formRows do
+        local row = ui.formRows[i]
+        if row then
+            if row.indexLabel then row.indexLabel:Hide() end
+            if row.qBox then row.qBox:Hide() end
+            if row.delBtn then row.delBtn:Hide() end
+        end
+    end
+end
+
+-- Shows the requested tab and populates its content.
+local function SwitchTab(tab)
+    state.activeTab = tab
+    ui.spamPanel:SetShown(tab == "spam")
+    ui.formPanel:SetShown(tab == "form")
+    ui.appsPanel:SetShown(tab == "apps")
+
+    if tab == "spam" then
+        BuildSpamRows()
+    elseif tab == "form" then
+        BuildQuestionRows()
+    else
+        local applicants = GetSortedApplicants()
+        if #applicants > 0 and not state.selectedApplicant then
+            state.selectedApplicant = applicants[1]
+        end
+        RefreshApplicantDropdownText()
+        RefreshAnswersText()
+    end
 end
 
 local function InitializeUI()
+    -- Dimensions
+    local panelLeft   = 12
+    local panelTop    = -72
+    local panelWidth  = 696
+    local panelHeight = 380
+    local scrollW     = panelWidth - 20   -- room for scrollbar
+    local childW      = panelWidth - 44
+
     local main = CreateFrame("Frame", "GuildRecruitmentHelperMainFrame", UIParent)
     main:SetWidth(720)
-    main:SetHeight(430)
+    main:SetHeight(470)
     main:SetPoint("CENTER")
     main:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -224,81 +424,71 @@ local function InitializeUI()
     local close = CreateFrame("Button", nil, main, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -5, -5)
 
-    local spamHeader = main:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    spamHeader:SetPoint("TOPLEFT", 20, -44)
-    spamHeader:SetText("Channel Spam")
+    -- Tab buttons
+    local tabDefs = {
+        { key = "spam", label = "Chat Spam",    width = 100 },
+        { key = "form", label = "Form Creation", width = 110 },
+        { key = "apps", label = "Applications",  width = 100 },
+    }
+    ui.tabButtons = {}
+    local tabX = 20
+    for _, tabDef in ipairs(tabDefs) do
+        local btn = CreateFrame("Button", "GRHTab_" .. tabDef.key, main, "UIPanelButtonTemplate")
+        btn:SetWidth(tabDef.width)
+        btn:SetHeight(24)
+        btn:SetPoint("TOPLEFT", main, "TOPLEFT", tabX, -40)
+        btn:SetText(tabDef.label)
+        local capturedKey = tabDef.key
+        btn:SetScript("OnClick", function() SwitchTab(capturedKey) end)
+        ui.tabButtons[tabDef.key] = btn
+        tabX = tabX + tabDef.width + 4
+    end
 
-    local channelLabel = main:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    channelLabel:SetPoint("TOPLEFT", 20, -72)
-    channelLabel:SetText("Channel")
+    -- ================================================================
+    -- CHAT SPAM PANEL
+    -- ================================================================
+    local spamPanel = CreateFrame("Frame", "GRHSpamPanel", main)
+    spamPanel:SetPoint("TOPLEFT", main, "TOPLEFT", panelLeft, panelTop)
+    spamPanel:SetWidth(panelWidth)
+    spamPanel:SetHeight(panelHeight)
+    ui.spamPanel = spamPanel
 
-    local channelDropdown = CreateFrame("Frame", "GuildRecruitmentHelperChannelDropdown", main, "UIDropDownMenuTemplate")
-    channelDropdown:SetPoint("TOPLEFT", -14, -84)
-    ui.channelDropdown = channelDropdown
+    -- Column headers
+    local hdrChan = spamPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hdrChan:SetPoint("TOPLEFT", spamPanel, "TOPLEFT", 4, -2)
+    hdrChan:SetText("Channel")
 
-    local messageLabel = main:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    messageLabel:SetPoint("TOPLEFT", 20, -120)
-    messageLabel:SetText("Message")
+    local hdrMsg = spamPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hdrMsg:SetPoint("TOPLEFT", spamPanel, "TOPLEFT", 140, -2)
+    hdrMsg:SetText("Message")
 
-    local messageBox = CreateFrame("EditBox", "GuildRecruitmentHelperMessageBox", main, "InputBoxTemplate")
-    messageBox:SetPoint("TOPLEFT", 20, -140)
-    messageBox:SetWidth(310)
-    messageBox:SetHeight(24)
-    messageBox:SetAutoFocus(false)
-    messageBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    ui.messageBox = messageBox
+    local hdrInt = spamPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hdrInt:SetPoint("TOPLEFT", spamPanel, "TOPLEFT", 448, -2)
+    hdrInt:SetText("Interval")
 
-    local intervalLabel = main:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    intervalLabel:SetPoint("TOPLEFT", 20, -174)
-    intervalLabel:SetText("Interval (seconds)")
+    local hdrOn = spamPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hdrOn:SetPoint("TOPLEFT", spamPanel, "TOPLEFT", 506, -2)
+    hdrOn:SetText("On")
 
-    local intervalBox = CreateFrame("EditBox", "GuildRecruitmentHelperIntervalBox", main, "InputBoxTemplate")
-    intervalBox:SetPoint("TOPLEFT", 20, -194)
-    intervalBox:SetWidth(80)
-    intervalBox:SetHeight(24)
-    intervalBox:SetNumeric(true)
-    intervalBox:SetAutoFocus(false)
-    intervalBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    ui.intervalBox = intervalBox
+    local spamScroll = CreateFrame("ScrollFrame", "GRHSpamScrollFrame", spamPanel, "UIPanelScrollFrameTemplate")
+    spamScroll:SetPoint("TOPLEFT", spamPanel, "TOPLEFT", 0, -18)
+    spamScroll:SetWidth(scrollW)
+    spamScroll:SetHeight(panelHeight - 50)
+    ui.spamScrollFrame = spamScroll
 
-    local enabledCheck = CreateFrame("CheckButton", "GuildRecruitmentHelperEnabledCheck", main, "UICheckButtonTemplate")
-    enabledCheck:SetPoint("TOPLEFT", 118, -194)
-    _G[enabledCheck:GetName() .. "Text"]:SetText("Enabled")
-    ui.enabledCheck = enabledCheck
+    local spamScrollChild = CreateFrame("Frame", "GRHSpamScrollChild", spamScroll)
+    spamScrollChild:SetWidth(childW)
+    spamScrollChild:SetHeight(1)
+    spamScroll:SetScrollChild(spamScrollChild)
+    ui.spamScrollChild = spamScrollChild
+    ui.spamRows = {}
 
-    local saveButton = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
-    saveButton:SetPoint("TOPLEFT", 20, -230)
-    saveButton:SetWidth(110)
-    saveButton:SetHeight(24)
-    saveButton:SetText("Save Config")
-    saveButton:SetScript("OnClick", function()
-        local key = state.selectedChannelKey
-        if not key then
-            return
-        end
-
-        local option = GetChannelOptionByKey(key)
-        if not option then
-            return
-        end
-
-        local cfg = EnsureConfigForOption(option)
-        cfg.message = Trim(ui.messageBox:GetText())
-        cfg.interval = tonumber(ui.intervalBox:GetText()) or 300
-        if cfg.interval < MIN_SPAM_INTERVAL then
-            cfg.interval = MIN_SPAM_INTERVAL
-        end
-        cfg.enabled = ui.enabledCheck:GetChecked() and true or false
-        cfg.nextSendAt = nil
-        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[GRH]|r Saved channel config for " .. option.label)
-    end)
-
-    local toggleSpamButton = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
-    toggleSpamButton:SetPoint("TOPLEFT", 140, -230)
-    toggleSpamButton:SetWidth(110)
-    toggleSpamButton:SetHeight(24)
-    toggleSpamButton:SetText("Start Spam")
-    toggleSpamButton:SetScript("OnClick", function(self)
+    local toggleSpamBtn = CreateFrame("Button", "GRHToggleSpamBtn", spamPanel, "UIPanelButtonTemplate")
+    toggleSpamBtn:SetPoint("BOTTOMLEFT", spamPanel, "BOTTOMLEFT", 0, 2)
+    toggleSpamBtn:SetWidth(110)
+    toggleSpamBtn:SetHeight(24)
+    toggleSpamBtn:SetText("Start Spam")
+    toggleSpamBtn:SetScript("OnClick", function(self)
         state.isSpamming = not state.isSpamming
         if state.isSpamming then
             self:SetText("Stop Spam")
@@ -308,60 +498,102 @@ local function InitializeUI()
             DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[GRH]|r Channel spam disabled.")
         end
     end)
-    ui.toggleSpamButton = toggleSpamButton
+    ui.toggleSpamButton = toggleSpamBtn
 
-    local formsHeader = main:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    formsHeader:SetPoint("TOPLEFT", 370, -44)
-    formsHeader:SetText("Applications")
+    -- ================================================================
+    -- FORM CREATION PANEL
+    -- ================================================================
+    local formPanel = CreateFrame("Frame", "GRHFormPanel", main)
+    formPanel:SetPoint("TOPLEFT", main, "TOPLEFT", panelLeft, panelTop)
+    formPanel:SetWidth(panelWidth)
+    formPanel:SetHeight(panelHeight)
+    formPanel:Hide()
+    ui.formPanel = formPanel
 
-    local applicantLabel = main:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    applicantLabel:SetPoint("TOPLEFT", 370, -72)
+    local fHdrNum = formPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fHdrNum:SetPoint("TOPLEFT", formPanel, "TOPLEFT", 4, -2)
+    fHdrNum:SetText("#")
+
+    local fHdrQ = formPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    fHdrQ:SetPoint("TOPLEFT", formPanel, "TOPLEFT", 36, -2)
+    fHdrQ:SetText("Question text (sent when player uses !apply / !next)")
+
+    local formScroll = CreateFrame("ScrollFrame", "GRHFormScrollFrame", formPanel, "UIPanelScrollFrameTemplate")
+    formScroll:SetPoint("TOPLEFT", formPanel, "TOPLEFT", 0, -18)
+    formScroll:SetWidth(scrollW)
+    formScroll:SetHeight(panelHeight - 50)
+    ui.formScrollFrame = formScroll
+
+    local formScrollChild = CreateFrame("Frame", "GRHFormScrollChild", formScroll)
+    formScrollChild:SetWidth(childW)
+    formScrollChild:SetHeight(1)
+    formScroll:SetScrollChild(formScrollChild)
+    ui.formScrollChild = formScrollChild
+    ui.formRows = {}
+
+    local addQBtn = CreateFrame("Button", "GRHAddQBtn", formPanel, "UIPanelButtonTemplate")
+    addQBtn:SetPoint("BOTTOMLEFT", formPanel, "BOTTOMLEFT", 0, 2)
+    addQBtn:SetWidth(110)
+    addQBtn:SetHeight(24)
+    addQBtn:SetText("Add Question")
+    addQBtn:SetScript("OnClick", function()
+        SaveQuestionEdits()
+        table.insert(state.db.questions, "Enter your question here")
+        BuildQuestionRows()
+    end)
+
+    local saveAllQBtn = CreateFrame("Button", "GRHSaveAllQBtn", formPanel, "UIPanelButtonTemplate")
+    saveAllQBtn:SetPoint("BOTTOMLEFT", formPanel, "BOTTOMLEFT", 118, 2)
+    saveAllQBtn:SetWidth(90)
+    saveAllQBtn:SetHeight(24)
+    saveAllQBtn:SetText("Save All")
+    saveAllQBtn:SetScript("OnClick", function()
+        SaveQuestionEdits()
+        DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99[GRH]|r Application questions saved.")
+    end)
+
+    -- ================================================================
+    -- APPLICATIONS PANEL
+    -- ================================================================
+    local appsPanel = CreateFrame("Frame", "GRHAppsPanel", main)
+    appsPanel:SetPoint("TOPLEFT", main, "TOPLEFT", panelLeft, panelTop)
+    appsPanel:SetWidth(panelWidth)
+    appsPanel:SetHeight(panelHeight)
+    appsPanel:Hide()
+    ui.appsPanel = appsPanel
+
+    local applicantLabel = appsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applicantLabel:SetPoint("TOPLEFT", appsPanel, "TOPLEFT", 4, -2)
     applicantLabel:SetText("Applicant")
 
-    local applicantDropdown = CreateFrame("Frame", "GuildRecruitmentHelperApplicantDropdown", main, "UIDropDownMenuTemplate")
-    applicantDropdown:SetPoint("TOPLEFT", 336, -84)
+    local applicantDropdown = CreateFrame("Frame", "GuildRecruitmentHelperApplicantDropdown", appsPanel, "UIDropDownMenuTemplate")
+    applicantDropdown:SetPoint("TOPLEFT", appsPanel, "TOPLEFT", -16, -18)
     ui.applicantDropdown = applicantDropdown
 
-    local scrollFrame = CreateFrame("ScrollFrame", "GuildRecruitmentHelperAnswersScrollFrame", main, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", 370, -126)
-    scrollFrame:SetWidth(320)
-    scrollFrame:SetHeight(260)
-    ui.answersScrollFrame = scrollFrame
+    local answersScrollFrame = CreateFrame("ScrollFrame", "GuildRecruitmentHelperAnswersScrollFrame", appsPanel, "UIPanelScrollFrameTemplate")
+    answersScrollFrame:SetPoint("TOPLEFT", appsPanel, "TOPLEFT", 0, -52)
+    answersScrollFrame:SetWidth(scrollW)
+    answersScrollFrame:SetHeight(panelHeight - 82)
+    ui.answersScrollFrame = answersScrollFrame
 
-    local answersBox = CreateFrame("EditBox", "GuildRecruitmentHelperAnswersBox", scrollFrame)
+    local answersBox = CreateFrame("EditBox", "GuildRecruitmentHelperAnswersBox", answersScrollFrame)
     answersBox:SetMultiLine(true)
     answersBox:SetFontObject(ChatFontNormal)
-    answersBox:SetWidth(300)
+    answersBox:SetWidth(childW)
     answersBox:SetAutoFocus(false)
     answersBox:EnableMouse(true)
     answersBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    scrollFrame:SetScrollChild(answersBox)
+    answersScrollFrame:SetScrollChild(answersBox)
     ui.answersBox = answersBox
 
-    local refreshFormsButton = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
-    refreshFormsButton:SetPoint("TOPLEFT", 370, -392)
-    refreshFormsButton:SetWidth(120)
-    refreshFormsButton:SetHeight(24)
-    refreshFormsButton:SetText("Refresh Forms")
-    refreshFormsButton:SetScript("OnClick", function()
+    local refreshBtn = CreateFrame("Button", "GRHRefreshAppsBtn", appsPanel, "UIPanelButtonTemplate")
+    refreshBtn:SetPoint("BOTTOMLEFT", appsPanel, "BOTTOMLEFT", 0, 2)
+    refreshBtn:SetWidth(120)
+    refreshBtn:SetHeight(24)
+    refreshBtn:SetText("Refresh Applicants")
+    refreshBtn:SetScript("OnClick", function()
         RefreshApplicantDropdownText()
         RefreshAnswersText()
-    end)
-
-    UIDropDownMenu_Initialize(channelDropdown, function(self, level)
-        local options = EnumerateChannels()
-        for i = 1, #options do
-            local option = options[i]
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = option.label
-            info.value = option.key
-            info.func = function()
-                state.selectedChannelKey = option.key
-                UIDropDownMenu_SetText(channelDropdown, option.label)
-                RefreshConfigFields()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
     end)
 
     UIDropDownMenu_Initialize(applicantDropdown, function(self, level)
@@ -512,19 +744,7 @@ local function ToggleUI()
         return
     end
 
-    local options = EnumerateChannels()
-    if not state.selectedChannelKey and options[1] then
-        state.selectedChannelKey = options[1].key
-    end
-
-    RefreshConfigFields()
-
-    local applicants = GetSortedApplicants()
-    if #applicants > 0 and not state.selectedApplicant then
-        state.selectedApplicant = applicants[1]
-    end
-    RefreshApplicantDropdownText()
-    RefreshAnswersText()
+    SwitchTab(state.activeTab or "spam")
     ui.main:Show()
 end
 
