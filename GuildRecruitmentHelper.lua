@@ -75,9 +75,10 @@ local function EnumerateChannels()
         if channelID and channelName and channelName ~= "" then
             table.insert(options, {
                 key = "CHANNEL:" .. channelName,
-                label = "Channel - " .. channelName,
+                label = "/" .. channelID .. " - " .. channelName,
                 mode = "CHANNEL",
                 channelName = channelName,
+                channelID = channelID,
             })
         end
     end
@@ -744,6 +745,7 @@ local function ToggleUI()
         return
     end
 
+    BuildSpamRows()
     SwitchTab(state.activeTab or "spam")
     ui.main:Show()
 end
