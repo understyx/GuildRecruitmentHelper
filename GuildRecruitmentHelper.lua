@@ -370,9 +370,9 @@ end
 -- Shows the requested tab and populates its content.
 local function SwitchTab(tab)
     state.activeTab = tab
-    ui.spamPanel:SetShown(tab == "spam")
-    ui.formPanel:SetShown(tab == "form")
-    ui.appsPanel:SetShown(tab == "apps")
+    if tab == "spam" then ui.spamPanel:Show() else ui.spamPanel:Hide() end
+    if tab == "form" then ui.formPanel:Show() else ui.formPanel:Hide() end
+    if tab == "apps" then ui.appsPanel:Show() else ui.appsPanel:Hide() end
 
     if tab == "spam" then
         BuildSpamRows()
