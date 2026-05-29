@@ -75,9 +75,10 @@ local function EnumerateChannels()
         if channelID and channelName and channelName ~= "" then
             table.insert(options, {
                 key = "CHANNEL:" .. channelName,
-                label = "Channel - " .. channelName,
+                label = "/" .. channelID .. " - " .. channelName,
                 mode = "CHANNEL",
                 channelName = channelName,
+                channelID = channelID,
             })
         end
     end
@@ -105,12 +106,14 @@ local function EnsureConfigForOption(option)
             mode = option.mode,
             chatType = option.chatType,
             channelName = option.channelName,
+            channelID = option.channelID,
         }
         state.db.channelConfigs[option.key] = cfg
     else
         cfg.mode = option.mode
         cfg.chatType = option.chatType
         cfg.channelName = option.channelName
+        cfg.channelID = option.channelID
     end
 
     return cfg
@@ -619,12 +622,9 @@ local function SendConfiguredMessage(cfg)
         return true
     end
 
-    if cfg.mode == "CHANNEL" and cfg.channelName then
-        local channelID = GetChannelName(cfg.channelName)
-        if channelID and channelID > 0 then
-            SendChatMessage(cfg.message, "CHANNEL", nil, channelID)
-            return true
-        end
+    if cfg.mode == "CHANNEL" and cfg.channelID and cfg.channelID > 0 then
+        SendChatMessage(cfg.message, "CHANNEL", nil, cfg.channelID)
+        return true
     end
 
     return false
@@ -744,6 +744,7 @@ local function ToggleUI()
         return
     end
 
+    BuildSpamRows()
     SwitchTab(state.activeTab or "spam")
     ui.main:Show()
 end
