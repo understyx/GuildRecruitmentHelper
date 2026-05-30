@@ -69,7 +69,7 @@ local function EnumerateChannels()
     }
 
     local channels = { GetChannelList() }
-    for i = 1, #channels, 3 do
+    for i = 1, #channels, 2 do
         local channelID = channels[i]
         local channelName = channels[i + 1]
         if channelID and channelName and channelName ~= "" then
