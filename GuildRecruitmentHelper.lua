@@ -19,6 +19,7 @@ local defaults = {
 
 local COMMAND_APPLY = "!apply"
 local COMMAND_NEXT = "!next"
+local COMMAND_CANCEL = "!cancel"
 local MIN_SPAM_INTERVAL = 60
 
 local function EnsureDB()
@@ -119,24 +120,18 @@ end
 
 local ui = {}
 
-local function RefreshAnswersText()
-    if not ui.answersBox then
-        return
+local function BuildApplicationText(playerName)
+    if not playerName then
+        return "No applicant selected."
     end
 
-    if not state.selectedApplicant then
-        ui.answersBox:SetText("No applicant selected.")
-        return
-    end
-
-    local application = state.db.applications[state.selectedApplicant]
+    local application = state.db.applications[playerName]
     if not application then
-        ui.answersBox:SetText("No application found.")
-        return
+        return "No application found."
     end
 
     local lines = {}
-    table.insert(lines, "Applicant: " .. state.selectedApplicant)
+    table.insert(lines, "Applicant: " .. playerName)
     local submittedLabel = application.submittedAtText or "Unknown"
     if submittedLabel == "Unknown" and application.submittedAt then
         submittedLabel = tostring(application.submittedAt)
@@ -151,7 +146,15 @@ local function RefreshAnswersText()
         table.insert(lines, "")
     end
 
-    ui.answersBox:SetText(table.concat(lines, "\n"))
+    return table.concat(lines, "\n")
+end
+
+local function RefreshAnswersText()
+    if not ui.answersBox then
+        return
+    end
+
+    ui.answersBox:SetText(BuildApplicationText(state.selectedApplicant))
 end
 
 local function GetSortedApplicants()
@@ -583,7 +586,20 @@ local function InitializeUI()
     answersBox:SetWidth(childW)
     answersBox:SetAutoFocus(false)
     answersBox:EnableMouse(true)
+    answersBox:SetHyperlinksEnabled(true)
     answersBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    answersBox:SetScript("OnChar", function() end)
+    answersBox:SetScript("OnHyperlinkClick", function(_, link, text, button)
+        SetItemRef(link, text, button)
+    end)
+    answersBox:SetScript("OnHyperlinkEnter", function(_, link)
+        GameTooltip:SetOwner(UIParent, "ANCHOR_CURSOR")
+        GameTooltip:SetHyperlink(link)
+        GameTooltip:Show()
+    end)
+    answersBox:SetScript("OnHyperlinkLeave", function()
+        GameTooltip:Hide()
+    end)
     answersScrollFrame:SetScrollChild(answersBox)
     ui.answersBox = answersBox
 
@@ -596,6 +612,68 @@ local function InitializeUI()
         RefreshApplicantDropdownText()
         RefreshAnswersText()
     end)
+
+    -- Copy popup (created lazily on first use)
+    local copyPopupFrame, copyPopupEditBox
+
+    local function ShowCopyPopup()
+        if not copyPopupFrame then
+            local popup = CreateFrame("Frame", "GRHCopyPopupFrame", UIParent)
+            popup:SetWidth(500)
+            popup:SetHeight(350)
+            popup:SetPoint("CENTER")
+            popup:SetBackdrop({
+                bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+                tile = true,
+                tileSize = 32,
+                edgeSize = 32,
+                insets = { left = 11, right = 12, top = 12, bottom = 11 }
+            })
+            popup:EnableMouse(true)
+            popup:SetMovable(true)
+            popup:RegisterForDrag("LeftButton")
+            popup:SetScript("OnDragStart", function(self) self:StartMoving() end)
+            popup:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+            popup:SetFrameStrata("DIALOG")
+            popup:Hide()
+
+            local popupTitle = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            popupTitle:SetPoint("TOP", 0, -14)
+            popupTitle:SetText("Copy Application (Ctrl+A, Ctrl+C)")
+
+            local popupClose = CreateFrame("Button", nil, popup, "UIPanelCloseButton")
+            popupClose:SetPoint("TOPRIGHT", -5, -5)
+            popupClose:SetScript("OnClick", function() popup:Hide() end)
+
+            local popupScroll = CreateFrame("ScrollFrame", "GRHCopyScrollFrame", popup, "UIPanelScrollFrameTemplate")
+            popupScroll:SetPoint("TOPLEFT", popup, "TOPLEFT", 12, -30)
+            popupScroll:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -30, 10)
+
+            local popupEdit = CreateFrame("EditBox", "GRHCopyEditBox", popupScroll)
+            popupEdit:SetMultiLine(true)
+            popupEdit:SetFontObject(ChatFontNormal)
+            popupEdit:SetWidth(440)
+            popupEdit:SetAutoFocus(false)
+            popupEdit:SetScript("OnEscapePressed", function() popup:Hide() end)
+            popupScroll:SetScrollChild(popupEdit)
+
+            copyPopupFrame = popup
+            copyPopupEditBox = popupEdit
+        end
+
+        copyPopupEditBox:SetText(BuildApplicationText(state.selectedApplicant))
+        copyPopupEditBox:SetFocus()
+        copyPopupEditBox:HighlightText()
+        copyPopupFrame:Show()
+    end
+
+    local copyBtn = CreateFrame("Button", "GRHCopyAppBtn", appsPanel, "UIPanelButtonTemplate")
+    copyBtn:SetPoint("BOTTOMLEFT", appsPanel, "BOTTOMLEFT", 128, 2)
+    copyBtn:SetWidth(130)
+    copyBtn:SetHeight(24)
+    copyBtn:SetText("Copy Application")
+    copyBtn:SetScript("OnClick", ShowCopyPopup)
 
     UIDropDownMenu_Initialize(applicantDropdown, function(self, level)
         local applicants = GetSortedApplicants()
@@ -658,7 +736,7 @@ local function StartApplySession(playerName)
     }
 
     local firstQuestion = state.db.questions[1] or "No questions configured."
-    SendChatMessage("Thanks for applying! Question 1: " .. firstQuestion, "WHISPER", nil, playerName)
+    SendChatMessage("Thanks for applying! Type !cancel at any time to cancel. Question 1: " .. firstQuestion, "WHISPER", nil, playerName)
 end
 
 local function CompleteSession(playerName, session)
@@ -713,7 +791,7 @@ local function HandleSessionMessage(playerName, message)
         session.currentAnswer = session.currentAnswer .. " " .. text
     end
 
-    SendChatMessage("Answer recorded. Type !next when done answering, or keep typing to add more.", "WHISPER", nil, playerName)
+    SendChatMessage("Answer recorded. Type !next when done answering, !cancel to cancel, or keep typing to add more.", "WHISPER", nil, playerName)
 end
 
 local function HandleWhisper(message, sender)
@@ -729,9 +807,19 @@ local function HandleWhisper(message, sender)
 
     if strlower(text) == COMMAND_APPLY then
         if state.whisperSessions[playerName] then
-            SendChatMessage("Your application is already in progress. Continue answering and use !next when ready.", "WHISPER", nil, playerName)
+            SendChatMessage("Your application is already in progress. Continue answering, use !next to move to the next question, or !cancel to cancel.", "WHISPER", nil, playerName)
         else
             StartApplySession(playerName)
+        end
+        return
+    end
+
+    if strlower(text) == COMMAND_CANCEL then
+        if state.whisperSessions[playerName] then
+            state.whisperSessions[playerName] = nil
+            SendChatMessage("Your application has been cancelled. You can start a new one with !apply.", "WHISPER", nil, playerName)
+        else
+            SendChatMessage("You don't have an active application to cancel.", "WHISPER", nil, playerName)
         end
         return
     end
